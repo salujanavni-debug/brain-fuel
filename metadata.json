@@ -1,0 +1,6 @@
+{
+  "name": "SignSpeak",
+  "description": "AI-powered sign language translation and gesture recognition platform built with React, FastAPI, MediaPipe, and Supabase.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,18 @@
+{
+  "id": "/",
+  "name": "SignSpeak — Inclusive Communication Assistant",
+  "short_name": "SignSpeak",
+  "description": "Inclusive sign language translator, quick communication board, two-way conversation bridge, and emergency phrase aid.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "theme_color": "#A78BFA",
+  "background_color": "#FFFCF8",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

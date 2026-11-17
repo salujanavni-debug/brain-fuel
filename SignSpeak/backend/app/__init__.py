@@ -1,0 +1,1 @@
+"""SignSpeak FastAPI backend package."""

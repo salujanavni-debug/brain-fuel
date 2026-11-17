@@ -1,0 +1,90 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Plus Jakarta Sans", "Nunito", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Nunito", "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-lavender: #a78bfa;
+  --color-lavender-soft: #ede9fe;
+  --color-pastel-blue: #bfdbfe;
+  --color-mint: #a7f3d0;
+  --color-peach: #fed7aa;
+  --color-canvas: #fffcf8;
+  --color-ink: #292544;
+}
+
+@layer base {
+  html {
+    font-size: 16px;
+  }
+
+  html[data-text-size='large'] {
+    font-size: 18px;
+  }
+
+  html[data-text-size='xlarge'] {
+    font-size: 20px;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #fffcf8;
+    color: #292544;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display);
+    color: #292544;
+  }
+
+  *:focus-visible {
+    outline: 3px solid #7c3aed;
+    outline-offset: 2px;
+  }
+
+  html[data-contrast='high'] body {
+    background-color: #ffffff;
+    color: #09090b;
+  }
+
+  html[data-contrast='high'] h1,
+  html[data-contrast='high'] h2,
+  html[data-contrast='high'] h3,
+  html[data-contrast='high'] h4 {
+    color: #09090b;
+  }
+
+  html[data-contrast='high'] *:focus-visible {
+    outline: 3px solid #09090b;
+    outline-offset: 3px;
+  }
+
+  html[data-contrast='high'] .rounded-3xl,
+  html[data-contrast='high'] .rounded-2xl {
+    border-color: #18181b !important;
+  }
+
+  html[data-reduced-motion='true'] *,
+  html[data-reduced-motion='true'] *::before,
+  html[data-reduced-motion='true'] *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
