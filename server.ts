@@ -119,12 +119,110 @@ const QUIZ_BANK = [
   },
 ];
 
+function sanitizeLogMessage(input: string): string {
+  return input
+    .replace(/(Bearer\s+)[A-Za-z0-9._-]+/gi, '$1[REDACTED]')
+    .replace(/(service_role["']?\s*[:=]\s*["']?)[^"'\s,;]+/gi, '$1[REDACTED]')
+    .replace(/(apikey["']?\s*[:=]\s*["']?)[^"'\s,;]+/gi, '$1[REDACTED]')
+    .replace(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}/g, '[REDACTED_JWT]');
+}
+
+function createRateLimiter(maxRequests: number, windowMs: number) {
+  const hits = new Map<string, number[]>();
+  return (ip: string): { allowed: boolean; remaining: number; retryAfterSec: number } => {
+    const now = Date.now();
+    const cutoff = now - windowMs;
+    const timestamps = (hits.get(ip) || []).filter((t) => t > cutoff);
+    if (timestamps.length >= maxRequests) {
+      const oldest = timestamps[0] || now;
+      const retryAfterSec = Math.max(1, Math.ceil((windowMs - (now - oldest)) / 1000));
+      hits.set(ip, timestamps);
+      return { allowed: false, remaining: 0, retryAfterSec };
+    }
+    timestamps.push(now);
+    hits.set(ip, timestamps);
+    return {
+      allowed: true,
+      remaining: Math.max(0, maxRequests - timestamps.length),
+      retryAfterSec: 0,
+    };
+  };
+}
+
+function hasValidHandFrames(frames: unknown): boolean {
+  if (!Array.isArray(frames) || frames.length === 0) return false;
+  return frames.every((frame) => {
+    if (!frame || typeof frame !== 'object') return false;
+    const landmarks = (frame as { landmarks?: unknown }).landmarks;
+    return (
+      Array.isArray(landmarks) &&
+      landmarks.length > 0 &&
+      landmarks.length <= 2 &&
+      landmarks.every((hand) => Array.isArray(hand) && hand.length === 21)
+    );
+  });
+}
+
 async function startServer() {
   const app = express();
   const port = Number(process.env.PORT || 3000);
   const isProd = process.env.NODE_ENV === 'production';
+  const rateLimitMax = Math.max(10, Number(process.env.RATE_LIMIT_PER_MINUTE || 120));
+  const checkRateLimit = createRateLimiter(rateLimitMax, 60_000);
 
+  const allowedOrigins = new Set(
+    (
+      process.env.CORS_ORIGINS ||
+      process.env.APP_URL ||
+      'http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173'
+    )
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean)
+  );
+
+  app.disable('x-powered-by');
   app.use(express.json({ limit: '2mb' }));
+
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self)');
+
+    const origin = req.headers.origin;
+    if (origin && (allowedOrigins.has(origin) || (!isProd && origin.startsWith('http://localhost:')))) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
+    }
+
+    if (req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
+
+    if (req.path.startsWith('/api') && req.path !== '/api/health') {
+      const forwarded = String(req.headers['x-forwarded-for'] || '');
+      const clientIp = forwarded.split(',')[0].trim() || req.ip || 'unknown';
+      const limitState = checkRateLimit(clientIp);
+      res.setHeader('X-RateLimit-Limit', String(rateLimitMax));
+      res.setHeader('X-RateLimit-Remaining', String(limitState.remaining));
+      if (!limitState.allowed) {
+        res.setHeader('Retry-After', String(limitState.retryAfterSec));
+        res.status(429).json({
+          error: {
+            code: 'RATE_LIMIT_EXCEEDED',
+            message: 'Too many requests. Please slow down and try again shortly.',
+            status_code: 429,
+          },
+        });
+        return;
+      }
+    }
+
+    next();
+  });
 
   const mediapipeWasmDir = path.resolve(
     __dirname,
@@ -304,11 +402,11 @@ async function startServer() {
   // 5. Recognition Batch
   app.post('/api/recognition/batch', (req, res) => {
     const frames = req.body?.frames;
-    if (!Array.isArray(frames) || frames.length === 0 || frames.length > 120) {
+    if (!Array.isArray(frames) || frames.length === 0 || frames.length > 120 || !hasValidHandFrames(frames)) {
       res.status(422).json({
         error: {
           code: 'VALIDATION_ERROR',
-          message: 'frames must be a non-empty array of up to 120 landmark frames.',
+          message: 'frames must be a non-empty array of up to 120 frames, each containing 1–2 hands with 21 landmarks.',
           status_code: 422,
         },
       });
@@ -346,11 +444,11 @@ async function startServer() {
       });
       return;
     }
-    if (!Array.isArray(frames) || frames.length === 0 || frames.length > 60) {
+    if (!Array.isArray(frames) || frames.length === 0 || frames.length > 60 || !hasValidHandFrames(frames)) {
       res.status(422).json({
         error: {
           code: 'VALIDATION_ERROR',
-          message: 'frames must contain 1 to 60 validated MediaPipe landmark frames.',
+          message: 'frames must contain 1 to 60 validated 21-point MediaPipe landmark frames.',
           status_code: 422,
         },
       });
@@ -588,6 +686,20 @@ async function startServer() {
       }
     });
   }
+
+  app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const safeMsg = sanitizeLogMessage(err instanceof Error ? err.message : String(err));
+    console.error(`Server error on ${req.method} ${req.path}: ${safeMsg}`);
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: {
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'An unexpected internal error occurred.',
+          status_code: 500,
+        },
+      });
+    }
+  });
 
   app.listen(port, '0.0.0.0', () => {
     console.log(`SignSpeak preview server listening on http://0.0.0.0:${port}`);

@@ -16,7 +16,13 @@ import {
   XCircle,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import api from '../services/api';
+import {
+  fetchGestureDetailFromApi,
+  fetchLearningCategories,
+  fetchLearningGestures,
+  fetchQuizQuestionsFromApi,
+  submitQuizAnswersToApi,
+} from '../services/translationService';
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import { HandIllustration } from '../components/HandIllustration';
@@ -110,7 +116,10 @@ export function LearnSignPage() {
   const { user } = useAuth();
   const [mode, setMode] = useState('library');
   const [gestures, setGestures] = useState(SIGN_VOCABULARY);
+  const [apiCategories, setApiCategories] = useState([]);
   const [catalogSource, setCatalogSource] = useState('local');
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogNotice, setCatalogNotice] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [selectedDifficulty, setSelectedDifficulty] = useState('All');
@@ -123,26 +132,80 @@ export function LearnSignPage() {
   const [isFlipped, setIsFlipped] = useState(false);
 
   const [quizCategory, setQuizCategory] = useState('All');
+  const [remoteQuizQuestions, setRemoteQuizQuestions] = useState([]);
+  const [quizLoading, setQuizLoading] = useState(false);
+  const [quizError, setQuizError] = useState(null);
   const [quizIndex, setQuizIndex] = useState(0);
   const [selectedOption, setSelectedOption] = useState(null);
+  const [answerFeedback, setAnswerFeedback] = useState(null);
+  const [checkingAnswer, setCheckingAnswer] = useState(false);
   const [submittedAnswers, setSubmittedAnswers] = useState([]);
   const [score, setScore] = useState(0);
   const [quizPercentage, setQuizPercentage] = useState(null);
   const [quizFinished, setQuizFinished] = useState(false);
   const [savingQuiz, setSavingQuiz] = useState(false);
 
-  useEffect(() => {
-    let active = true;
-    fetchPublicGestures().then(({ gestures: loaded, source }) => {
-      if (!active) return;
-      setGestures(loaded);
-      setCatalogSource(source);
-      setDeckOrder(loaded.map((g) => g.id));
-    });
-    return () => {
-      active = false;
-    };
+  const loadCatalogData = useCallback(async () => {
+    setCatalogLoading(true);
+    setCatalogNotice(null);
+
+    const [supaRes, catRes, apiGesturesRes] = await Promise.allSettled([
+      fetchPublicGestures(),
+      fetchLearningCategories(),
+      fetchLearningGestures(),
+    ]);
+
+    if (catRes.status === 'fulfilled' && Array.isArray(catRes.value.categories)) {
+      setApiCategories(catRes.value.categories);
+    }
+
+    if (supaRes.status === 'fulfilled' && supaRes.value.source === 'supabase') {
+      setGestures(supaRes.value.gestures);
+      setCatalogSource('supabase');
+      setDeckOrder(supaRes.value.gestures.map((g) => g.id));
+      setCatalogLoading(false);
+      return;
+    }
+
+    if (apiGesturesRes.status === 'fulfilled' && apiGesturesRes.value.gestures.length > 0) {
+      const localById = new Map(SIGN_VOCABULARY.map((entry) => [entry.id, entry]));
+      const mapped = apiGesturesRes.value.gestures.map((item) => {
+        const local = localById.get(item.id);
+        return {
+          id: item.id,
+          word: item.label || local?.word || item.id,
+          meaning: item.meaning || local?.meaning,
+          aliases: item.aliases || local?.aliases || [],
+          category: item.category || local?.category || 'Greetings',
+          difficulty: item.difficulty || local?.difficulty || 'Beginner',
+          illustration:
+            item.demonstration_assets?.[0]?.identifier || local?.illustration || item.id,
+          handshape: item.handshape || local?.handshape || '',
+          movement: item.movement || local?.movement || '',
+          tip: item.tip || local?.tip || '',
+          sourceReference: local?.sourceReference || 'Verified Starter Sign Guide',
+          isVerified: local?.isVerified ?? true,
+        };
+      });
+      setGestures(mapped);
+      setCatalogSource('api');
+      setDeckOrder(mapped.map((g) => g.id));
+      setCatalogLoading(false);
+      return;
+    }
+
+    setGestures(SIGN_VOCABULARY);
+    setCatalogSource('local');
+    setDeckOrder(SIGN_VOCABULARY.map((g) => g.id));
+    setCatalogNotice(
+      'SignSpeak API is currently unreachable — showing the offline verified starter vocabulary.'
+    );
+    setCatalogLoading(false);
   }, []);
+
+  useEffect(() => {
+    void loadCatalogData();
+  }, [loadCatalogData]);
 
   useEffect(() => {
     let active = true;
@@ -153,6 +216,42 @@ export function LearnSignPage() {
       active = false;
     };
   }, [user?.id]);
+
+  const loadQuizFromApi = useCallback(async (category) => {
+    setQuizLoading(true);
+    setQuizError(null);
+    try {
+      const res = await fetchQuizQuestionsFromApi({
+        category: category === 'All' ? undefined : category,
+        limit: 8,
+      });
+      const localById = new Map(QUIZ_QUESTIONS.map((q) => [q.id, q]));
+      const mapped = res.questions.map((q) => {
+        const fallback = localById.get(q.id);
+        return {
+          id: q.id,
+          gestureId: q.gesture_id,
+          category: q.category,
+          prompt: q.prompt,
+          options: q.options,
+          answer: fallback?.answer || '',
+          explanation: fallback?.explanation || '',
+        };
+      });
+      setRemoteQuizQuestions(mapped);
+    } catch {
+      setRemoteQuizQuestions([]);
+      setQuizError('Could not reach the quiz API — using offline practice questions.');
+    } finally {
+      setQuizLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (mode === 'quiz') {
+      void loadQuizFromApi(quizCategory);
+    }
+  }, [mode, quizCategory, loadQuizFromApi]);
 
   const filteredGestures = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -186,10 +285,11 @@ export function LearnSignPage() {
     flashcardDeck[Math.min(flashIndex, Math.max(0, flashcardDeck.length - 1))] || null;
 
   const quizQuestions = useMemo(() => {
+    if (remoteQuizQuestions.length > 0) return remoteQuizQuestions;
     if (quizCategory === 'All') return QUIZ_QUESTIONS;
     const filtered = QUIZ_QUESTIONS.filter((q) => q.category === quizCategory);
     return filtered.length > 0 ? filtered : QUIZ_QUESTIONS;
-  }, [quizCategory]);
+  }, [quizCategory, remoteQuizQuestions]);
 
   const currentQuestion = quizQuestions[quizIndex] || quizQuestions[0];
 
@@ -199,6 +299,26 @@ export function LearnSignPage() {
   );
   const progressPct =
     gestures.length > 0 ? Math.round((completedCount / gestures.length) * 100) : 0;
+
+  const handleOpenGestureGuide = useCallback(async (gesture) => {
+    setSelectedGesture(gesture);
+    try {
+      const detail = await fetchGestureDetailFromApi(gesture.id);
+      setSelectedGesture((prev) =>
+        prev && prev.id === detail.id
+          ? {
+              ...prev,
+              meaning: detail.meaning || prev.meaning,
+              handshape: detail.handshape || prev.handshape,
+              movement: detail.movement || prev.movement,
+              tip: detail.tip || prev.tip,
+            }
+          : prev
+      );
+    } catch {
+      // Keep local/Supabase guide details
+    }
+  }, []);
 
   const handleToggleGestureLearned = useCallback(
     async (gestureId, nextCompleted, nextScore) => {
@@ -233,10 +353,33 @@ export function LearnSignPage() {
     setIsFlipped(false);
   };
 
-  const handleAnswerSelect = (option) => {
-    if (selectedOption !== null) return;
+  const handleAnswerSelect = async (option) => {
+    if (selectedOption !== null || checkingAnswer || !currentQuestion) return;
     setSelectedOption(option);
-    if (option === currentQuestion.answer) {
+    setCheckingAnswer(true);
+
+    let isCorrect = option === currentQuestion.answer;
+    let correctAnswer = currentQuestion.answer;
+    let explanation = currentQuestion.explanation;
+
+    try {
+      const apiResult = await submitQuizAnswersToApi([
+        { question_id: currentQuestion.id, selected_option: option },
+      ]);
+      const graded = apiResult.results?.[0];
+      if (graded) {
+        isCorrect = graded.is_correct;
+        correctAnswer = graded.correct_answer;
+        explanation = graded.explanation;
+      }
+    } catch {
+      // Fallback uses local answer/explanation
+    } finally {
+      setCheckingAnswer(false);
+    }
+
+    setAnswerFeedback({ isCorrect, correctAnswer, explanation });
+    if (isCorrect) {
       setScore((prev) => prev + 1);
     }
     setSubmittedAnswers((prev) => [
@@ -245,6 +388,7 @@ export function LearnSignPage() {
         question_id: currentQuestion.id,
         selected_option: option,
         gestureId: currentQuestion.gestureId,
+        isCorrect,
       },
     ]);
   };
@@ -253,19 +397,30 @@ export function LearnSignPage() {
     setSavingQuiz(true);
     let calculatedScore = localScore;
     let calculatedPct = Math.round((localScore / quizQuestions.length) * 100);
+    const correctGestureIds = new Set(
+      finalAnswers.filter((item) => item.isCorrect).map((item) => item.gestureId)
+    );
 
     try {
-      const res = await api.post('/api/learning/quiz/submit', {
-        answers: finalAnswers.map(({ question_id, selected_option }) => ({
+      const res = await submitQuizAnswersToApi(
+        finalAnswers.map(({ question_id, selected_option }) => ({
           question_id,
           selected_option,
-        })),
-      });
-      if (typeof res.data?.correct_count === 'number') {
-        calculatedScore = res.data.correct_count;
+        }))
+      );
+      if (typeof res.correct_count === 'number') {
+        calculatedScore = res.correct_count;
       }
-      if (typeof res.data?.score_percentage === 'number') {
-        calculatedPct = Math.round(res.data.score_percentage);
+      if (typeof res.score_percentage === 'number') {
+        calculatedPct = Math.round(res.score_percentage);
+      }
+      if (Array.isArray(res.results)) {
+        res.results.forEach((entry) => {
+          if (entry.is_correct) {
+            const match = finalAnswers.find((a) => a.question_id === entry.question_id);
+            if (match) correctGestureIds.add(match.gestureId);
+          }
+        });
       }
     } catch {
       // Offline / local fallback
@@ -275,12 +430,9 @@ export function LearnSignPage() {
     setQuizPercentage(calculatedPct);
     setQuizFinished(true);
 
-    for (const item of finalAnswers) {
-      const q = QUIZ_QUESTIONS.find((entry) => entry.id === item.question_id);
-      if (q && item.selected_option === q.answer) {
-        const updated = await upsertLearningProgress(user?.id, q.gestureId, true, 100);
-        setProgressMap(updated);
-      }
+    for (const gestureId of correctGestureIds) {
+      const updated = await upsertLearningProgress(user?.id, gestureId, true, 100);
+      setProgressMap(updated);
     }
 
     await saveQuizResult(user?.id, calculatedScore, quizQuestions.length, quizCategory);
@@ -293,6 +445,7 @@ export function LearnSignPage() {
     } else {
       setQuizIndex((prev) => prev + 1);
       setSelectedOption(null);
+      setAnswerFeedback(null);
     }
   };
 
@@ -300,6 +453,7 @@ export function LearnSignPage() {
     setQuizCategory(nextCategory);
     setQuizIndex(0);
     setSelectedOption(null);
+    setAnswerFeedback(null);
     setSubmittedAnswers([]);
     setScore(0);
     setQuizPercentage(null);
@@ -374,9 +528,13 @@ export function LearnSignPage() {
               <span className="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-0.5 text-[11px] font-bold text-[#047857]">
                 <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>
-                  {catalogSource === 'supabase'
-                    ? 'Synced from Supabase catalog'
-                    : 'Verified starter library'}
+                  {catalogLoading
+                    ? 'Syncing gesture catalog...'
+                    : catalogSource === 'supabase'
+                      ? 'Synced from Supabase catalog'
+                      : catalogSource === 'api'
+                        ? 'Synced from SignSpeak API'
+                        : 'Verified starter library'}
                 </span>
               </span>
             </div>
@@ -410,6 +568,14 @@ export function LearnSignPage() {
             style={{ width: `${progressPct}%` }}
           />
         </div>
+        {catalogNotice && (
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-white/85 px-3.5 py-2 text-xs font-semibold text-[#9A3412]">
+            <span>{catalogNotice}</span>
+            <Button variant="outline" size="sm" onClick={() => void loadCatalogData()}>
+              Retry API Sync
+            </Button>
+          </div>
+        )}
       </Card>
 
       {mode === 'library' && (
@@ -452,25 +618,39 @@ export function LearnSignPage() {
               </div>
 
               <div className="flex flex-wrap gap-2" role="group" aria-label="Gesture categories">
-                {SIGN_CATEGORIES.map((category) => (
-                  <button
-                    key={category}
-                    type="button"
-                    onClick={() => setSelectedCategory(category)}
-                    className={`rounded-xl px-3.5 py-2 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap ${
-                      selectedCategory === category
-                        ? 'bg-[#292544] text-white'
-                        : 'bg-[#EDE9FE]/65 text-[#292544] hover:bg-[#EDE9FE]'
-                    }`}
-                  >
-                    {category}
-                  </button>
-                ))}
+                {SIGN_CATEGORIES.map((category) => {
+                  const apiCat = apiCategories.find((c) => c.name === category);
+                  return (
+                    <button
+                      key={category}
+                      type="button"
+                      onClick={() => setSelectedCategory(category)}
+                      className={`rounded-xl px-3.5 py-2 text-xs font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                        selectedCategory === category
+                          ? 'bg-[#292544] text-white'
+                          : 'bg-[#EDE9FE]/65 text-[#292544] hover:bg-[#EDE9FE]'
+                      }`}
+                    >
+                      {category}
+                      {apiCat ? ` (${apiCat.gesture_count})` : ''}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </Card>
 
-          {filteredGestures.length === 0 ? (
+          {catalogLoading ? (
+            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3" aria-busy="true">
+              {[0, 1, 2].map((skeleton) => (
+                <Card key={skeleton} tone="default" padding="p-5" className="animate-pulse">
+                  <div className="h-40 w-full rounded-2xl bg-[#EDE9FE]/60" />
+                  <div className="mt-4 h-6 w-1/2 rounded-lg bg-[#EDE9FE]/80" />
+                  <div className="mt-2 h-4 w-3/4 rounded-lg bg-[#EDE9FE]/50" />
+                </Card>
+              ))}
+            </div>
+          ) : filteredGestures.length === 0 ? (
             <Card tone="default" className="text-center">
               <p className="text-base font-bold text-[#292544]">
                 No gestures match your current filters
@@ -532,7 +712,7 @@ export function LearnSignPage() {
                         <Button
                           variant="secondary"
                           size="sm"
-                          onClick={() => setSelectedGesture(gesture)}
+                          onClick={() => void handleOpenGestureGuide(gesture)}
                         >
                           Guide
                         </Button>
@@ -726,7 +906,11 @@ export function LearnSignPage() {
 
       {mode === 'quiz' && (
         <Card tone="lavender" className="mx-auto max-w-2xl">
-          {quizFinished ? (
+          {quizLoading ? (
+            <div className="py-10 text-center text-sm font-bold text-[#292544]/75">
+              Loading quiz questions from SignSpeak API...
+            </div>
+          ) : quizFinished ? (
             <div className="py-6 text-center">
               <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[#A7F3D0] text-[#292544]">
                 <Award className="h-7 w-7" aria-hidden="true" />
@@ -760,6 +944,11 @@ export function LearnSignPage() {
             </div>
           ) : (
             <div className="space-y-6">
+              {quizError && (
+                <div className="rounded-2xl bg-white/85 px-3.5 py-2 text-xs font-semibold text-[#9A3412]">
+                  {quizError}
+                </div>
+              )}
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-bold text-[#292544]/75">
                 <span className="inline-flex items-center gap-1.5">
                   <HelpCircle className="h-4 w-4 text-[#6D28D9]" aria-hidden="true" />
@@ -795,11 +984,13 @@ export function LearnSignPage() {
               <div className="grid gap-3 sm:grid-cols-2">
                 {currentQuestion.options.map((option) => {
                   const isSelected = selectedOption === option;
-                  const isCorrect = option === currentQuestion.answer;
+                  const resolvedAnswer =
+                    answerFeedback?.correctAnswer || currentQuestion.answer;
+                  const isCorrect = option === resolvedAnswer;
                   let buttonStyle =
                     'border-[#DDD6FE] bg-white text-[#292544] hover:border-[#A78BFA] hover:bg-[#EDE9FE]/40';
 
-                  if (selectedOption !== null) {
+                  if (selectedOption !== null && answerFeedback) {
                     if (isCorrect) {
                       buttonStyle = 'border-[#10B981] bg-[#A7F3D0]/70 text-[#292544]';
                     } else if (isSelected) {
@@ -813,15 +1004,15 @@ export function LearnSignPage() {
                     <button
                       key={option}
                       type="button"
-                      disabled={selectedOption !== null}
-                      onClick={() => handleAnswerSelect(option)}
+                      disabled={selectedOption !== null || checkingAnswer}
+                      onClick={() => void handleAnswerSelect(option)}
                       className={`flex min-h-[52px] items-center justify-between rounded-2xl border-2 px-5 py-3 text-left text-base font-bold transition-colors cursor-pointer disabled:cursor-default ${buttonStyle}`}
                     >
                       <span>{option}</span>
-                      {selectedOption !== null && isCorrect && (
+                      {selectedOption !== null && answerFeedback && isCorrect && (
                         <CheckCircle2 className="h-5 w-5 text-[#047857]" aria-hidden="true" />
                       )}
-                      {selectedOption !== null && isSelected && !isCorrect && (
+                      {selectedOption !== null && answerFeedback && isSelected && !isCorrect && (
                         <XCircle className="h-5 w-5 text-[#B91C1C]" aria-hidden="true" />
                       )}
                     </button>
@@ -829,16 +1020,16 @@ export function LearnSignPage() {
                 })}
               </div>
 
-              {selectedOption !== null && (
+              {selectedOption !== null && answerFeedback && (
                 <div className="flex flex-wrap items-center justify-between gap-4 border-t border-[#DDD6FE] pt-4">
                   <div>
                     <p className="text-sm font-bold text-[#292544]">
-                      {selectedOption === currentQuestion.answer
+                      {answerFeedback.isCorrect
                         ? 'Correct! Nice observation.'
-                        : `The correct sign is "${currentQuestion.answer}".`}
+                        : `The correct sign is "${answerFeedback.correctAnswer}".`}
                     </p>
                     <p className="mt-0.5 text-xs font-semibold text-[#292544]/75">
-                      {currentQuestion.explanation}
+                      {answerFeedback.explanation}
                     </p>
                   </div>
                   <Button variant="primary" size="md" onClick={handleNextQuestion}>

@@ -14,16 +14,18 @@ const api = axios.create({
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    const data = error.response?.data;
     const message =
-      error.response?.data?.detail ||
-      error.response?.data?.message ||
+      data?.error?.message ||
+      data?.detail ||
+      data?.message ||
       error.message ||
       'Unable to reach SignSpeak API';
 
     return Promise.reject({
       message,
       status: error.response?.status ?? null,
-      code: error.code ?? 'API_ERROR',
+      code: data?.error?.code ?? error.code ?? 'API_ERROR',
     });
   }
 );

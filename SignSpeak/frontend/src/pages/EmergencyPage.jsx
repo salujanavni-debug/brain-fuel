@@ -18,6 +18,7 @@ import {
 import { Button } from '../components/Button';
 import { Card } from '../components/Card';
 import { HandIllustration } from '../components/HandIllustration';
+import { fetchEmergencyMessagesFromApi } from '../services/translationService';
 import { copyToClipboard, speakTextDetailed, stopSpeech } from '../utils/speech';
 
 const EMERGENCY_PHRASES = [
@@ -92,12 +93,42 @@ function loadUsageState() {
 }
 
 export function EmergencyPage() {
+  const [phrases, setPhrases] = useState(EMERGENCY_PHRASES);
   const [activePhrase, setActivePhrase] = useState(EMERGENCY_PHRASES[0]);
   const [speaking, setSpeaking] = useState(false);
   const [speechNotice, setSpeechNotice] = useState(null);
   const [copied, setCopied] = useState(false);
   const [fullScreenOpen, setFullScreenOpen] = useState(false);
   const [usage, setUsage] = useState(() => loadUsageState());
+
+  useEffect(() => {
+    let active = true;
+    fetchEmergencyMessagesFromApi()
+      .then((res) => {
+        if (!active || !Array.isArray(res.messages) || res.messages.length === 0) return;
+        const metaById = new Map(EMERGENCY_PHRASES.map((item) => [item.id, item]));
+        const hydrated = res.messages.map((msg) => {
+          const fallback = metaById.get(msg.id);
+          return {
+            id: msg.id,
+            text: msg.message,
+            illustration: msg.gesture_id || fallback?.illustration || 'help',
+            icon: fallback?.icon || AlertCircle,
+            toneClass:
+              fallback?.toneClass || 'bg-[#EDE9FE] hover:bg-[#DDD6FE] border-[#A78BFA]/50',
+            speechRate: msg.speech_rate || 0.9,
+          };
+        });
+        setPhrases(hydrated);
+        setActivePhrase((prev) => hydrated.find((item) => item.id === prev.id) || hydrated[0]);
+      })
+      .catch(() => {
+        // Offline fallback keeps all 7 urgent phrases immediately usable
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     try {
@@ -123,7 +154,7 @@ export function EmergencyPage() {
   }, [fullScreenOpen]);
 
   const frequentPhrases = useMemo(() => {
-    const scored = EMERGENCY_PHRASES.map((p) => ({
+    const scored = phrases.map((p) => ({
       phrase: p,
       isPinned: usage.pinned.includes(p.id),
       count: usage.counts[p.id] || 0,
@@ -133,7 +164,7 @@ export function EmergencyPage() {
       return b.count - a.count;
     });
     return scored.slice(0, 4).map((item) => item.phrase);
-  }, [usage]);
+  }, [phrases, usage]);
 
   const handleTogglePin = (phraseId) => {
     setUsage((prev) => {
@@ -160,7 +191,7 @@ export function EmergencyPage() {
     }));
 
     const res = speakTextDetailed(phrase.text, {
-      rate: 0.9,
+      rate: typeof phrase.speechRate === 'number' ? phrase.speechRate : 0.9,
       onStart: () => setSpeaking(true),
       onEnd: () => setSpeaking(false),
       onError: (msg) => {
@@ -289,7 +320,7 @@ export function EmergencyPage() {
       </Card>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        {EMERGENCY_PHRASES.map((phrase, idx) => {
+        {phrases.map((phrase, idx) => {
           const Icon = phrase.icon;
           const isActive = activePhrase.id === phrase.id;
           const isPinned = usage.pinned.includes(phrase.id);
@@ -300,7 +331,7 @@ export function EmergencyPage() {
               className={`flex min-h-[92px] items-center justify-between gap-3 rounded-3xl border-2 px-5 py-4 transition-all duration-150 ${
                 phrase.toneClass
               } ${isActive ? 'ring-3 ring-[#292544]/25' : ''} ${
-                idx === EMERGENCY_PHRASES.length - 1 ? 'sm:col-span-2' : ''
+                idx === phrases.length - 1 ? 'sm:col-span-2' : ''
               }`}
             >
               <button

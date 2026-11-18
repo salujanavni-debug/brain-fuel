@@ -5,6 +5,8 @@ from fastapi import HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.core.logging import redact_secrets
+
 logger = logging.getLogger("signspeak.exceptions")
 
 
@@ -18,7 +20,7 @@ def build_error_payload(
     payload = {
         "error": {
             "code": code,
-            "message": message,
+            "message": redact_secrets(message),
             "status_code": status_code,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -34,7 +36,7 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
         exc.status_code,
         request.method,
         request.url.path,
-        exc.detail,
+        redact_secrets(str(exc.detail)),
     )
     return JSONResponse(
         status_code=exc.status_code,
@@ -49,11 +51,19 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
 async def validation_exception_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
+    sanitized_errors = [
+        {
+            "loc": err.get("loc"),
+            "msg": err.get("msg"),
+            "type": err.get("type"),
+        }
+        for err in exc.errors()
+    ]
     logger.warning(
         "Validation error on %s %s: %s",
         request.method,
         request.url.path,
-        exc.errors(),
+        sanitized_errors,
     )
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -61,7 +71,7 @@ async def validation_exception_handler(
             code="VALIDATION_ERROR",
             message="Request payload validation failed.",
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            details=exc.errors(),
+            details=sanitized_errors,
         ),
     )
 
@@ -71,7 +81,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
         "Unhandled exception on %s %s: %s",
         request.method,
         request.url.path,
-        str(exc),
+        redact_secrets(type(exc).__name__),
     )
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

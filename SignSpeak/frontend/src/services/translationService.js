@@ -20,8 +20,48 @@ export async function recognizeLandmarks(landmarksPayload, options = {}) {
   return response.data;
 }
 
+export async function recognizeLandmarkBatch(frames) {
+  const response = await api.post('/api/recognition/batch', { frames });
+  return response.data;
+}
+
 export async function submitDatasetSample(payload) {
   const response = await api.post('/api/recognition/dataset/samples', payload);
+  return response.data;
+}
+
+export async function fetchGesturesFromApi(params) {
+  const response = await api.get('/api/gestures', { params });
+  return response.data;
+}
+
+export async function fetchGestureDetailFromApi(gestureId) {
+  const response = await api.get(`/api/gestures/${encodeURIComponent(gestureId)}`);
+  return response.data;
+}
+
+export async function fetchLearningCategories() {
+  const response = await api.get('/api/learning/categories');
+  return response.data;
+}
+
+export async function fetchLearningGestures(params) {
+  const response = await api.get('/api/learning/gestures', { params });
+  return response.data;
+}
+
+export async function fetchQuizQuestionsFromApi(payload = {}) {
+  const response = await api.post('/api/learning/quiz', payload);
+  return response.data;
+}
+
+export async function submitQuizAnswersToApi(answers) {
+  const response = await api.post('/api/learning/quiz/submit', { answers });
+  return response.data;
+}
+
+export async function fetchEmergencyMessagesFromApi() {
+  const response = await api.get('/api/emergency/messages');
   return response.data;
 }
 
